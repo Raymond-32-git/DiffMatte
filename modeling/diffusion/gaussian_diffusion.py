@@ -465,7 +465,7 @@ class GaussianDiffusion:
         else:
             noise = torch.randn(*shape, device=device)
             trimap = condition["trimap"]
-            noise_alpha = trimap.clone()
+            noise_alpha = trimap.clone() * 2 - 1
             noise_alpha[trimap == 0.5] = noise[trimap == 0.5]
         indices = list(range(self.num_timesteps))[::-1] 
 

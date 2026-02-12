@@ -40,14 +40,23 @@ class DifMatte(nn.Module):
                 terms, images = self.diffusion.training_losses(self.model, batched_inputs, t)          
                 return terms, images
         else:
+            # 1. INITIALIZE NOISE: Use Trimap to hint background (-1) and foreground (1)
+            device = batched_inputs["trimap"].device
+            shape = batched_inputs["trimap"].shape
+            noise = torch.randn(*shape, device=device)
+            trimap = batched_inputs["trimap"]
+            init_mask = trimap.clone() * 2 - 1
+            noise = torch.where(trimap == 0.5, noise, init_mask)
+
             if self.diffusion.uniform_timesteps:
                 sample_fn = (
                     self.diffusion.ddpm_sample if not self.args["use_ddim"] else self.diffusion.ddim_sample
                 )
                 sample = sample_fn(
                     self.model,
-                    batched_inputs["trimap"].shape,
+                    shape,
                     batched_inputs,
+                    noise=noise,
                     sample_list=sample_list,
                     GTalpha=alpha
                 )
@@ -57,19 +66,29 @@ class DifMatte(nn.Module):
                 )
                 sample = sample_fn(
                     self.model,
-                    batched_inputs["trimap"].shape,
+                    shape,
                     batched_inputs,
+                    noise=noise,
                     clip_denoised=self.args["clip_denoised"],
                     model_kwargs=None,
                 )
 
             if sample_list == None:
-                alpha_pred = torch.clamp(sample, 0., 1.)
-                trimap = batched_inputs["trimap"]
+                # Value mapping:
+                # UniformGauss (ViTB) already unnormalizes to [0, 1] internally.
+                # Standard GaussianDiffusion returns [-1, 1].
+                if self.diffusion.uniform_timesteps:
+                    alpha_pred = torch.clamp(sample, 0., 1.)
+                else:
+                    alpha_pred = (sample + 1) / 2
+                    alpha_pred = torch.clamp(alpha_pred, 0., 1.)
+                
+                # Double check background and foreground based on original trimap
+                # (trimap range is [0.0, 0.5, 1.0])
                 alpha_pred[trimap == 0] = 0.0
-                alpha_pred[trimap == 2] = 1.0
+                alpha_pred[trimap > 0.9] = 1.0 
 
-                alpha_pred = alpha_pred[0, 0, ...].data.cpu().numpy() * 255
+                alpha_pred = alpha_pred[0, 0, ...].detach().data.cpu().numpy() * 255
                 return alpha_pred
             else:
                 return sample
